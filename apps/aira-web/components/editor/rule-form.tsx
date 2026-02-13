@@ -10,6 +10,7 @@ import {
   HardDrive,
   Users,
   Clock,
+  Play,
 } from 'lucide-react';
 import { ScreenLayout } from '@/components/layout';
 import { Textarea } from '@/components/ui/textarea';
@@ -66,6 +67,18 @@ interface RuleFormBaseProps {
   isDeleting?: boolean;
   /** Only for create mode - integrate connector flow */
   onIntegrate?: (connectorId: string) => void;
+  /** Only for create mode - run rule once end-to-end before creating */
+  onRunOnce?: (data: RuleFormSubmitData) => void;
+  isRunningOnce?: boolean;
+  runOnceResult?: {
+    success: boolean;
+    summary?: string;
+    messages_scanned?: number;
+    groups_processed?: Array<{ w_id: string; chat_name: string; message_count: number }>;
+    actions?: Array<{ type: string; description: string; target?: string; preview?: string }>;
+    error?: string;
+  } | null;
+  onRunOnceResultClose?: () => void;
 }
 
 export interface RuleFormSubmitData {
@@ -94,6 +107,10 @@ export function RuleForm({
   onDelete,
   isDeleting = false,
   onIntegrate,
+  onRunOnce,
+  isRunningOnce = false,
+  runOnceResult,
+  onRunOnceResultClose,
 }: RuleFormBaseProps) {
   const initialHasSchedule =
     mode === 'edit' &&
@@ -143,7 +160,12 @@ export function RuleForm({
     );
   }, [groups, groupSearchQuery]);
 
-  const isLoading = isSaving || isDeleting;
+  const isLoading = isSaving || isDeleting || isRunningOnce;
+  const canRunOnce =
+    rawText.trim().length > 0 &&
+    (showGroupSelector ? selectedGroups.length > 0 : true) &&
+    (scheduleEnabled ? scheduleInterval !== 'none' : true) &&
+    !isLoading;
   const canSave =
     rawText.trim().length > 0 &&
     (showGroupSelector ? selectedGroups.length > 0 : true) &&
@@ -188,6 +210,36 @@ export function RuleForm({
     rule,
     suggestionId,
     onSave,
+  ]);
+
+  const handleRunOnce = useCallback(() => {
+    if (!canRunOnce || !onRunOnce) return;
+
+    const data: RuleFormSubmitData = {
+      w_id: selectedGroups,
+      raw_text: rawText,
+      status: 'active',
+    };
+
+    if (scheduleEnabled) {
+      data.trigger_time = buildTriggerTimeUTC(scheduleTime);
+      data.interval = INTERVAL_TO_DAYS[scheduleInterval];
+    }
+
+    if (suggestionId) {
+      data.suggestion_id = suggestionId;
+    }
+
+    onRunOnce(data);
+  }, [
+    canRunOnce,
+    rawText,
+    selectedGroups,
+    scheduleEnabled,
+    scheduleTime,
+    scheduleInterval,
+    suggestionId,
+    onRunOnce,
   ]);
 
   const handleDelete = useCallback(() => {
@@ -332,9 +384,23 @@ export function RuleForm({
           </motion.div>
         </div>
 
-        {/* Bottom Save Button */}
+        {/* Bottom Actions */}
         <div className="fixed bottom-0 left-0 right-0 px-2 bg-background">
-          <div className="mx-auto max-w-lg px-5 py-4">
+          <div className="mx-auto max-w-lg px-5 py-4 flex flex-col gap-3">
+            {mode === 'create' && onRunOnce && (
+              <Button
+                variant="outline"
+                onClick={handleRunOnce}
+                disabled={!canRunOnce}
+                className={cn(
+                  'w-full rounded-2xl py-3 text-base font-medium border-2 border-primary/40 text-primary hover:bg-primary/10 hover:border-primary/60',
+                  !canRunOnce && 'opacity-50',
+                )}
+              >
+                <Play className="mr-2 h-4 w-4" />
+                {isRunningOnce ? 'Running rule...' : 'Run once (see how it works)'}
+              </Button>
+            )}
             <Button
               onClick={handleSave}
               disabled={!canSave}
@@ -359,6 +425,91 @@ export function RuleForm({
         searchQuery={groupSearchQuery}
         onSearchChange={setGroupSearchQuery}
       />
+
+      {runOnceResult && onRunOnceResultClose && (
+        <Dialog open={!!runOnceResult} onOpenChange={open => !open && onRunOnceResultClose()}>
+          <DialogContent className="max-w-md max-h-[85vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Play className="h-5 w-5 text-primary" />
+                Run Once Result
+              </DialogTitle>
+              <DialogDescription>
+                {runOnceResult.success
+                  ? 'Your rule ran once and sent messages. Here\'s what happened:'
+                  : runOnceResult.error
+                    ? runOnceResult.error
+                    : 'The run encountered an issue. You can still create the rule.'}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-2">
+              {runOnceResult.success && runOnceResult.summary && (
+                <p className="text-sm text-foreground leading-relaxed">
+                  {runOnceResult.summary}
+                </p>
+              )}
+              {runOnceResult.success && runOnceResult.messages_scanned != null && (
+                <div className="rounded-lg bg-muted/50 px-3 py-2 text-sm">
+                  <span className="font-medium text-foreground">
+                    {runOnceResult.messages_scanned} message{runOnceResult.messages_scanned !== 1 ? 's' : ''} scanned
+                  </span>
+                </div>
+              )}
+              {runOnceResult.success && runOnceResult.groups_processed && runOnceResult.groups_processed.length > 0 && (
+                <div>
+                  <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Groups processed
+                  </p>
+                  <ul className="space-y-1.5">
+                    {runOnceResult.groups_processed.map((g, i) => (
+                      <li
+                        key={i}
+                        className="flex justify-between rounded-lg bg-muted/50 px-3 py-2 text-sm"
+                      >
+                        <span className="text-foreground">{g.chat_name}</span>
+                        <span className="text-muted-foreground">{g.message_count} messages</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {runOnceResult.success && runOnceResult.actions && runOnceResult.actions.length > 0 && (
+                <div>
+                  <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    What was sent
+                  </p>
+                  <ul className="space-y-2">
+                    {runOnceResult.actions.map((action, i) => (
+                      <li
+                        key={i}
+                        className="rounded-lg border border-border bg-card p-3 text-sm"
+                      >
+                        <p className="font-medium text-foreground">{action.description}</p>
+                        {action.target && (
+                          <p className="mt-1 text-xs text-muted-foreground">→ {action.target}</p>
+                        )}
+                        {action.preview && (
+                          <p className="mt-2 rounded bg-muted/50 px-2 py-1.5 font-mono text-xs text-foreground">
+                            {action.preview}
+                          </p>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {runOnceResult.success && !runOnceResult.summary && !runOnceResult.actions?.length && !runOnceResult.groups_processed?.length && (
+                <p className="text-sm text-muted-foreground">
+                  Rule ran successfully. No matching messages to act on. Create the rule to keep it active.
+                </p>
+              )}
+            </div>
+            <DialogFooter>
+              <Button onClick={onRunOnceResultClose}>Got it</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
 
       {mode === 'edit' && onDelete && (
         <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
